@@ -12,41 +12,23 @@ BALLDONTLIE_API_KEY = "7f4db7a9-c34e-478d-a799-fef77b9d1f78"
 BASE_URL = "https://api.balldontlie.io/v1"
 HEADERS = {"Authorization": BALLDONTLIE_API_KEY}
 
-DATA_DIR = Path(".")
+# IMPORTANT: Save CSV next to app.py so Streamlit Cloud always finds it
+DATA_DIR = Path(__file__).parent
 SAVED_PROPS_CSV = DATA_DIR / "saved_props.csv"
 
 # Hardcoded NBA Teams (Full Name + Abbreviation)
 NBA_TEAMS = [
-    ("Atlanta Hawks", "ATL"),
-    ("Boston Celtics", "BOS"),
-    ("Brooklyn Nets", "BKN"),
-    ("Charlotte Hornets", "CHA"),
-    ("Chicago Bulls", "CHI"),
-    ("Cleveland Cavaliers", "CLE"),
-    ("Dallas Mavericks", "DAL"),
-    ("Denver Nuggets", "DEN"),
-    ("Detroit Pistons", "DET"),
-    ("Golden State Warriors", "GSW"),
-    ("Houston Rockets", "HOU"),
-    ("Indiana Pacers", "IND"),
-    ("Los Angeles Clippers", "LAC"),
-    ("Los Angeles Lakers", "LAL"),
-    ("Memphis Grizzlies", "MEM"),
-    ("Miami Heat", "MIA"),
-    ("Milwaukee Bucks", "MIL"),
-    ("Minnesota Timberwolves", "MIN"),
-    ("New Orleans Pelicans", "NOP"),
-    ("New York Knicks", "NYK"),
-    ("Oklahoma City Thunder", "OKC"),
-    ("Orlando Magic", "ORL"),
-    ("Philadelphia 76ers", "PHI"),
-    ("Phoenix Suns", "PHX"),
-    ("Portland Trail Blazers", "POR"),
-    ("Sacramento Kings", "SAC"),
-    ("San Antonio Spurs", "SAS"),
-    ("Toronto Raptors", "TOR"),
-    ("Utah Jazz", "UTA"),
-    ("Washington Wizards", "WAS"),
+    ("Atlanta Hawks", "ATL"), ("Boston Celtics", "BOS"), ("Brooklyn Nets", "BKN"),
+    ("Charlotte Hornets", "CHA"), ("Chicago Bulls", "CHI"), ("Cleveland Cavaliers", "CLE"),
+    ("Dallas Mavericks", "DAL"), ("Denver Nuggets", "DEN"), ("Detroit Pistons", "DET"),
+    ("Golden State Warriors", "GSW"), ("Houston Rockets", "HOU"), ("Indiana Pacers", "IND"),
+    ("Los Angeles Clippers", "LAC"), ("Los Angeles Lakers", "LAL"), ("Memphis Grizzlies", "MEM"),
+    ("Miami Heat", "MIA"), ("Milwaukee Bucks", "MIL"), ("Minnesota Timberwolves", "MIN"),
+    ("New Orleans Pelicans", "NOP"), ("New York Knicks", "NYK"), ("Oklahoma City Thunder", "OKC"),
+    ("Orlando Magic", "ORL"), ("Philadelphia 76ers", "PHI"), ("Phoenix Suns", "PHX"),
+    ("Portland Trail Blazers", "POR"), ("Sacramento Kings", "SAC"),
+    ("San Antonio Spurs", "SAS"), ("Toronto Raptors", "TOR"),
+    ("Utah Jazz", "UTA"), ("Washington Wizards", "WAS"),
 ]
 
 # ---------------------------------------------------------
@@ -112,7 +94,7 @@ def get_player_stats(player_id, seasons=None):
     return all_stats
 
 # ---------------------------------------------------------
-# DEFENSIVE RATING (patched)
+# DEFENSIVE RATING (patched & correct season-year)
 # ---------------------------------------------------------
 
 def get_team_def_rating(team_abbr, season_year):
@@ -120,7 +102,6 @@ def get_team_def_rating(team_abbr, season_year):
 
     teams = api_get("teams").get("data", [])
     team_id = next((t["id"] for t in teams if t["abbreviation"].upper() == team_abbr.upper()), None)
-
     if not team_id:
         return 0.0
 
@@ -141,7 +122,7 @@ def get_team_def_rating(team_abbr, season_year):
             home_id = gm.get("home_team_id")
             away_id = gm.get("visitor_team_id")
 
-            # skip malformed objects
+            # skip malformed data
             if home_id is None or away_id is None:
                 continue
 
@@ -209,7 +190,7 @@ def stats_df(stats):
     return pd.DataFrame(rows)
 
 # ---------------------------------------------------------
-# HIT RATES + CARDS
+# HIT RATES + GLOW CARDS
 # ---------------------------------------------------------
 
 def hit_rate(series, line):
@@ -220,13 +201,11 @@ def hit_rate(series, line):
     total = len(s)
     return hits/total, hits, total
 
-
 def glow_color(p):
     if p <= 0.50: return "#e74c3c"
     if p <= 0.60: return "#e67e22"
     if p <= 0.70: return "#f1c40f"
     return "#2ecc71"
-
 
 def metric_card(label, hits, total, avg):
     pct = hits/total if total > 0 else 0
@@ -252,24 +231,23 @@ def metric_card(label, hits, total, avg):
     )
 
 # ---------------------------------------------------------
-# PROJECTION
+# PROJECTION MODEL
 # ---------------------------------------------------------
 
 def projection(l10, season, home, def_rating):
-    base = (0.5*l10 + 0.3*season + 0.2*home)
+    base = 0.5*l10 + 0.3*season + 0.2*home
     league_avg = 114
     adj = 1 + ((league_avg - def_rating) / league_avg) * 0.5 if def_rating else 1
     return base * adj
 
 # ---------------------------------------------------------
-# SAVING
+# SAVING / LOADING
 # ---------------------------------------------------------
 
 def load_props():
     if not SAVED_PROPS_CSV.exists():
         return pd.DataFrame()
     return pd.read_csv(SAVED_PROPS_CSV)
-
 
 def save_props(df):
     df.to_csv(SAVED_PROPS_CSV, index=False)
@@ -279,10 +257,12 @@ def save_props(df):
 # ---------------------------------------------------------
 
 def run_analysis(player, stat, line_val, odds_val, opponent_abbr):
+
     st.subheader(f"{player['first_name']} {player['last_name']} – {stat}")
 
+    # IMPORTANT FIX: BallDontLie season = current_year - 1 for in-season data
     today = datetime.now(timezone.utc).date()
-    season = today.year
+    season = today.year - 1
 
     stats = get_player_stats(player["id"], seasons=[season])
     df = stats_df(stats)
@@ -299,7 +279,7 @@ def run_analysis(player, stat, line_val, odds_val, opponent_abbr):
 
     # Season
     season_avg = df[field].mean()
-    rs, hs, ts = hit_rate(df[field], line_val)
+    rs, hs, ts2 = hit_rate(df[field], line_val)
 
     # Home/Away
     home_series = df[df["team_id"] == df["home_team_id"]][field]
@@ -311,10 +291,11 @@ def run_analysis(player, stat, line_val, odds_val, opponent_abbr):
     away_avg = away_series.mean()
     ra, ha, ta = hit_rate(away_series, line_val)
 
-    # Vs upcoming opponent (always shown)
+    # Opponent ID
     opp_teams = api_get("teams").get("data", [])
     opp_id = next((t["id"] for t in opp_teams if t["abbreviation"] == opponent_abbr), None)
 
+    # H2H filter
     if opp_id:
         vs_df = df[(df["home_team_id"] == opp_id) | (df["visitor_team_id"] == opp_id)]
         vs_avg = vs_df[field].mean() if not vs_df.empty else 0
@@ -330,13 +311,14 @@ def run_analysis(player, stat, line_val, odds_val, opponent_abbr):
     proj = projection(l10_avg, season_avg, home_avg, def_rating)
 
     # -----------------------------------------------------
-    # Metric card grid
+    # Metric Cards
     # -----------------------------------------------------
+
     st.markdown("### Hit Rates & Context")
 
     c1, c2, c3 = st.columns(3)
     with c1: metric_card("Last 10 ≥ Line", h10, t10, l10_avg)
-    with c2: metric_card("Season ≥ Line", hs, ts, season_avg)
+    with c2: metric_card("Season ≥ Line", hs, ts2, season_avg)
     with c3: metric_card("Home ≥ Line", hh, th, home_avg)
 
     c4, c5, c6 = st.columns(3)
@@ -403,7 +385,11 @@ def main():
     if dfp.empty:
         st.info("No saved props yet.")
     else:
-        st.dataframe(dfp.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(
+            dfp.sort_values("timestamp", ascending=False),
+            use_container_width=True,
+            hide_index=True
+        )
 
 
 if __name__ == "__main__":
