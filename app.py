@@ -355,24 +355,32 @@ def run_analysis(player, stat, line_value, odds_value, opponent_abbr):
     st.metric(f"Projected {stat}", f"{projection:.1f}")
 
     # Saving logic
-    if st.button("Save Prop"):
-        dfp = load_saved_props()
-        row = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "player_name": f"{player['first_name']} {player['last_name']}",
-            "player_id": player["id"],
-            "team": player["team"]["abbreviation"],
-            "stat": stat,
-            "line": line_value,
-            "odds": odds_value,
-            "projection": projection,
-            "opponent": opponent_abbr,
-            "outcome": "Pending",
-        }
-        dfp = pd.concat([dfp, pd.DataFrame([row])], ignore_index=True)
-        save_props(dfp)
-        st.success("Saved.")
+   if st.button("Save Prop"):
+    dfp = load_saved_props()
 
+    new_row = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "player_id": player["id"],
+        "player_name": f"{player['first_name']} {player['last_name']}",
+        "team_abbr": player["team"]["abbreviation"],
+        "stat": stat,
+        "line": line_value,
+        "odds": odds_value,
+        "projection": projection,
+        "opponent": opponent_abbr,
+        "outcome": "Pending",
+    }
+
+    # Ensure all columns exist
+    for col in new_row.keys():
+        if col not in dfp.columns:
+            dfp[col] = ""
+
+    dfp = pd.concat([dfp, pd.DataFrame([new_row])], ignore_index=True)
+
+    save_props(dfp)
+
+    st.success("Prop Saved Successfully!")
 
 # -----------------------------------------------
 # STREAMLIT UI
