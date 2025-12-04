@@ -5,17 +5,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # ---------------------------------------------------------
-# CONFIG
+# INITIALIZATION
 # ---------------------------------------------------------
+
+# Initialize session state storage for saving props
+if "last_analysis" not in st.session_state:
+    st.session_state.last_analysis = None
 
 API_KEY = "7f4db7a9-c34e-478d-a799-fef77b9d1f78"
 BASE_URL = "https://api.balldontlie.io/v1"
 HEADERS = {"Authorization": API_KEY}
 
-# Save file in working directory (Streamlit Cloud safe)
+# Writable in all Streamlit Cloud environments
 SAVED_PROPS = Path("saved_props.csv")
 
-# Hardcoded NBA Teams
 NBA_TEAMS = [
     ("Atlanta Hawks", "ATL"), ("Boston Celtics", "BOS"), ("Brooklyn Nets", "BKN"),
     ("Charlotte Hornets", "CHA"), ("Chicago Bulls", "CHI"), ("Cleveland Cavaliers", "CLE"),
@@ -37,26 +40,27 @@ STAT_MAP = {
 }
 
 # ---------------------------------------------------------
-# DYNAMIC SEASON LOGIC
+# CORRECT SEASON DETECTION
 # ---------------------------------------------------------
 
 def get_current_nba_season():
     """
-    Returns the correct balldontlie season.
-    Example: 2025–2026 → 2025
+    Returns the NBA season year.
+    Example:
+    2025–26 season → returns 2025
     """
     now = datetime.now()
     year = now.year
     month = now.month
 
-    # NBA season starts in October every year
+    # NBA season starts in October
     if month >= 10:
         return year
     else:
         return year - 1
 
 # ---------------------------------------------------------
-# API HELPERS
+# API METHODS
 # ---------------------------------------------------------
 
 def api_get(endpoint, params=None):
@@ -67,12 +71,14 @@ def api_get(endpoint, params=None):
     except:
         return {"data": []}
 
+
 def get_players(query):
     raw = api_get("players", {"search": query, "per_page": 50})
     uniq = {}
     for p in raw.get("data", []):
         uniq.setdefault((p["first_name"], p["last_name"]), p)
     return list(uniq.values())
+
 
 def get_stats(player_id, season):
     results = []
@@ -92,7 +98,6 @@ def get_stats(player_id, season):
         cursor = res.get("meta", {}).get("next_cursor")
         if not cursor:
             break
-
     return results
 
 # ---------------------------------------------------------
@@ -105,7 +110,7 @@ def get_def_rating(team_abbr, season):
     if not team_id:
         return 0.0
 
-    all_games = []
+    games = []
     cursor = None
 
     while True:
@@ -114,29 +119,30 @@ def get_def_rating(team_abbr, season):
             params["cursor"] = cursor
 
         res = api_get("games", params)
-        games = res.get("data", [])
-        if not games:
+        batch = res.get("data", [])
+        if not batch:
             break
 
-        for gm in games:
-            if gm.get("status") != "Final":
+        for gm in batch:
+            if gm.get("status") != "Final": 
                 continue
-            if None in [gm.get("home_team_id"), gm.get("visitor_team_id"),
-                        gm.get("home_team_score"), gm.get("visitor_team_score")]:
+            if any(
+                gm.get(k) is None 
+                for k in ["home_team_id", "visitor_team_id", "home_team_score", "visitor_team_score"]
+            ):
                 continue
-
             if gm["home_team_id"] == team_id or gm["visitor_team_id"] == team_id:
-                all_games.append(gm)
+                games.append(gm)
 
         cursor = res.get("meta", {}).get("next_cursor")
         if not cursor:
             break
 
-    if not all_games:
+    if not games:
         return 0.0
 
     allowed = []
-    for gm in all_games:
+    for gm in games:
         if gm["home_team_id"] == team_id:
             allowed.append(gm["visitor_team_score"])
         else:
@@ -145,7 +151,7 @@ def get_def_rating(team_abbr, season):
     return sum(allowed) / len(allowed)
 
 # ---------------------------------------------------------
-# PROCESS DATA
+# DATA PROCESSING
 # ---------------------------------------------------------
 
 def convert_minutes(v):
@@ -164,8 +170,7 @@ def convert_minutes(v):
 def stats_to_df(stats):
     rows = []
     for s in stats:
-        g = s["game"]
-        t = s["team"]
+        g = s["game"]; t = s["team"]
 
         rows.append({
             "date": pd.to_datetime(g["date"][:10]),
@@ -181,11 +186,10 @@ def stats_to_df(stats):
             "turnover": s.get("turnover"),
             "min": convert_minutes(s.get("min")),
         })
-
     return pd.DataFrame(rows)
 
 # ---------------------------------------------------------
-# HIT RATE + STYLING
+# METRICS
 # ---------------------------------------------------------
 
 def hit_rate(series, line):
@@ -203,8 +207,8 @@ def glow_color(p):
 
 def card(label, hits, total, avg):
     pct = hits / total if total > 0 else 0
-    pct_text = f"{pct*100:.0f}%"
-    hit_text = f"{hits}/{total}"
+    pct_txt = f"{pct*100:.0f}%"
+    hits_txt = f"{hits}/{total}"
     color = glow_color(pct)
 
     st.markdown(
@@ -213,19 +217,20 @@ def card(label, hits, total, avg):
             background:#111;
             border-radius:10px;
             padding:14px;
+            margin:6px;
             border:2px solid {color};
             box-shadow:0 0 12px {color};
             color:white;">
             <div style="font-size:13px;color:#ccc;">{label}</div>
-            <div style="font-size:22px;font-weight:700;">{hit_text} ({pct_text})</div>
-            <div style="font-size:14px;color:#bbb;">Avg: {avg:.1f}</div>
+            <div style="font-size:22px;font-weight:700;">{hits_txt} ({pct_txt})</div>
+            <div style="font-size:14px;color:#aaa;">Avg: {avg:.1f}</div>
         </div>
         """,
         unsafe_allow_html=True
     )
 
 # ---------------------------------------------------------
-# PROJECTION
+# PROJECTION MODEL
 # ---------------------------------------------------------
 
 def projected_value(last10, season_avg, home_avg, def_rating):
@@ -235,7 +240,7 @@ def projected_value(last10, season_avg, home_avg, def_rating):
     return base * adj
 
 # ---------------------------------------------------------
-# CSV SAVE
+# SAVE SYSTEM (CSV)
 # ---------------------------------------------------------
 
 def load_saved():
@@ -249,7 +254,7 @@ def save_prop(row):
     df.to_csv(SAVED_PROPS, index=False)
 
 # ---------------------------------------------------------
-# ANALYSIS
+# ANALYSIS ENGINE
 # ---------------------------------------------------------
 
 def analyze(player, stat, line, odds, opp_abbr):
@@ -260,45 +265,43 @@ def analyze(player, stat, line, odds, opp_abbr):
 
     field = STAT_MAP[stat]
 
-    # Last 10
+    # --- Calculate splits ---
     last10 = df.tail(10)[field]
     last10_avg = last10.mean()
-    r10, h10, t10 = hit_rate(last10, line)
+    _, h10, t10 = hit_rate(last10, line)
 
-    # Season Avg
     season_avg = df[field].mean()
-    rs, hs, ts2 = hit_rate(df[field], line)
+    _, hs, ts2 = hit_rate(df[field], line)
 
-    # Home / Away
     home = df[df["team_id"] == df["home_id"]][field]
     away = df[df["team_id"] != df["home_id"]][field]
 
     home_avg = home.mean()
-    rh, hh, th = hit_rate(home, line)
+    _, hh, th = hit_rate(home, line)
 
     away_avg = away.mean()
-    ra, ha, ta = hit_rate(away, line)
+    _, ha, ta = hit_rate(away, line)
 
-    # H2H
+    # --- H2H ---
     teams = api_get("teams").get("data", [])
     opp_id = next((t["id"] for t in teams if t["abbreviation"] == opp_abbr), None)
 
     if opp_id:
         vs = df[(df["home_id"] == opp_id) | (df["away_id"] == opp_id)][field]
         vs_avg = vs.mean() if not vs.empty else 0
-        rv, hv, tv = hit_rate(vs, line) if not vs.empty else (0, 0, 0)
+        _, hv, tv = hit_rate(vs, line) if not vs.empty else (0, 0, 0)
     else:
-        vs_avg = rv = hv = tv = 0
+        vs_avg = hv = tv = 0
 
-    # Defensive Rating
+    # --- Defensive Rating ---
     def_rating = get_def_rating(opp_abbr, season)
 
-    # Projection
+    # --- Projection ---
     proj = projected_value(last10_avg, season_avg, home_avg, def_rating)
 
-    # ----- UI -----
+    # --- Display UI ---
     st.markdown("### Performance Metrics")
-
+    
     c1, c2, c3 = st.columns(3)
     with c1: card("Last 10 ≥ Line", h10, t10, last10_avg)
     with c2: card("Season ≥ Line", hs, ts2, season_avg)
@@ -307,25 +310,27 @@ def analyze(player, stat, line, odds, opp_abbr):
     c4, c5, c6 = st.columns(3)
     with c4: card("Away ≥ Line", ha, ta, away_avg)
     with c5: card("Vs Opponent ≥ Line", hv, tv, vs_avg)
-    with c6: card("Opponent Def Rating", 0, 0, def_rating)
+    with c6: card("Opponent Defensive Rating", 0, 0, def_rating)
 
     st.subheader("Projection")
     st.metric(f"Projected {stat}", f"{proj:.1f}")
 
-    if st.button("Save This Prop"):
-        save_prop({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "player": f"{player['first_name']} {player['last_name']}",
-            "player_id": player["id"],
-            "team": player["team"]["abbreviation"],
-            "stat": stat,
-            "line": line,
-            "odds": odds,
-            "projection": proj,
-            "opponent": opp_abbr,
-            "outcome": "Pending"
-        })
-        st.success("Saved!")
+    # Store all results in session_state for saving
+    st.session_state.last_analysis = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "player": f"{player['first_name']} {player['last_name']}",
+        "player_id": player["id"],
+        "team": player["team"]["abbreviation"],
+        "stat": stat,
+        "line": line,
+        "odds": odds,
+        "projection": proj,
+        "opponent": opp_abbr,
+        "outcome": "Pending"
+    }
+
+    st.success("Analysis complete. Scroll down to save this prop.")
+
 
 # ---------------------------------------------------------
 # UI
@@ -335,13 +340,17 @@ def main():
     st.set_page_config(page_title="Top Prop Picks", layout="wide")
     st.title("Top Prop Picks – NBA Prop Evaluator")
 
+    # --- Player Search ---
     query = st.text_input("Search Player:")
     player = None
 
     if query:
         players = get_players(query)
         if players:
-            labels = [f"{p['first_name']} {p['last_name']} ({p['team']['abbreviation']})" for p in players]
+            labels = [
+                f"{p['first_name']} {p['last_name']} ({p['team']['abbreviation']})"
+                for p in players
+            ]
             sel = st.selectbox("Select Player:", labels)
             player = players[labels.index(sel)]
 
@@ -349,23 +358,32 @@ def main():
     line = st.number_input("Betting Line:", min_value=0.0, step=0.5)
     odds = st.text_input("Odds:")
 
-    opp_list = [f"{name} ({abbr})" for name, abbr in NBA_TEAMS]
-    opp_choice = st.selectbox("Opponent:", opp_list)
-    opp_abbr = opp_choice.split("(")[-1].replace(")", "")
+    opp_select = st.selectbox("Opponent:", [f"{n} ({a})" for n, a in NBA_TEAMS])
+    opp_abbr = opp_select.split("(")[-1].replace(")", "")
 
     if player and st.button("Run Analysis", type="primary"):
         analyze(player, stat, line, odds, opp_abbr)
 
-    # Saved Props Table
+    # --- Save Button ---
+    if st.session_state.last_analysis:
+        st.subheader("Save This Prop")
+
+        if st.button("Save Prop Now"):
+            save_prop(st.session_state.last_analysis)
+            st.success("Prop saved!")
+            st.session_state.last_analysis = None
+
+    # --- Table of Saved Props ---
     st.markdown("---")
     st.subheader("Saved Props")
-    df = load_saved()
 
+    df = load_saved()
     if df.empty:
         st.info("No saved props yet.")
     else:
-        st.dataframe(df.sort_values("timestamp", ascending=False), hide_index=True, use_container_width=True)
-
+        st.dataframe(df.sort_values("timestamp", ascending=False),
+                     hide_index=True,
+                     use_container_width=True)
 
 if __name__ == "__main__":
     main()
