@@ -3,21 +3,19 @@ import requests
 import pandas as pd
 from datetime import datetime, timezone
 from pathlib import Path
-import os
 
 # ---------------------------------------------------------
-# SETUP
+# CONFIG
 # ---------------------------------------------------------
 
 API_KEY = "7f4db7a9-c34e-478d-a799-fef77b9d1f78"
 BASE_URL = "https://api.balldontlie.io/v1"
 HEADERS = {"Authorization": API_KEY}
 
-# Streamlit Cloud writable directory
-DATA_DIR = Path("/mount/data")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-SAVED_PROPS = DATA_DIR / "saved_props.csv"
+# Save file in working directory (Streamlit Cloud safe)
+SAVED_PROPS = Path("saved_props.csv")
 
+# Hardcoded NBA Teams
 NBA_TEAMS = [
     ("Atlanta Hawks", "ATL"), ("Boston Celtics", "BOS"), ("Brooklyn Nets", "BKN"),
     ("Charlotte Hornets", "CHA"), ("Chicago Bulls", "CHI"), ("Cleveland Cavaliers", "CLE"),
@@ -39,27 +37,26 @@ STAT_MAP = {
 }
 
 # ---------------------------------------------------------
-# SEASON LOGIC (automatic & correct every year)
+# DYNAMIC SEASON LOGIC
 # ---------------------------------------------------------
 
 def get_current_nba_season():
     """
-    Returns the NBA season year for balldontlie.
-    Example: 2025–2026 → returns 2025
+    Returns the correct balldontlie season.
+    Example: 2025–2026 → 2025
     """
     now = datetime.now()
     year = now.year
     month = now.month
 
-    # NBA season begins in October (10)
+    # NBA season starts in October every year
     if month >= 10:
         return year
     else:
         return year - 1
 
-
 # ---------------------------------------------------------
-# API WRAPPERS
+# API HELPERS
 # ---------------------------------------------------------
 
 def api_get(endpoint, params=None):
@@ -80,23 +77,26 @@ def get_players(query):
 def get_stats(player_id, season):
     results = []
     cursor = None
+
     while True:
         params = {"player_ids[]": player_id, "seasons[]": season, "per_page": 100}
         if cursor:
             params["cursor"] = cursor
+
         res = api_get("stats", params)
         batch = res.get("data", [])
         if not batch:
             break
+
         results.extend(batch)
         cursor = res.get("meta", {}).get("next_cursor")
         if not cursor:
             break
+
     return results
 
-
 # ---------------------------------------------------------
-# DEFENSIVE RATING (correct implementation)
+# DEFENSIVE RATING
 # ---------------------------------------------------------
 
 def get_def_rating(team_abbr, season):
@@ -109,7 +109,7 @@ def get_def_rating(team_abbr, season):
     cursor = None
 
     while True:
-        params = {"seasons[]": season, "per_page": 100, "season_type": "regular"}
+        params = {"seasons[]": season, "season_type": "regular", "per_page": 100}
         if cursor:
             params["cursor"] = cursor
 
@@ -121,9 +121,8 @@ def get_def_rating(team_abbr, season):
         for gm in games:
             if gm.get("status") != "Final":
                 continue
-            if gm.get("home_team_id") is None or gm.get("visitor_team_id") is None:
-                continue
-            if gm.get("home_team_score") is None or gm.get("visitor_team_score") is None:
+            if None in [gm.get("home_team_id"), gm.get("visitor_team_id"),
+                        gm.get("home_team_score"), gm.get("visitor_team_score")]:
                 continue
 
             if gm["home_team_id"] == team_id or gm["visitor_team_id"] == team_id:
@@ -145,9 +144,8 @@ def get_def_rating(team_abbr, season):
 
     return sum(allowed) / len(allowed)
 
-
 # ---------------------------------------------------------
-# DATA PROCESSING
+# PROCESS DATA
 # ---------------------------------------------------------
 
 def convert_minutes(v):
@@ -157,7 +155,7 @@ def convert_minutes(v):
         return float(v)
     if ":" in str(v):
         m, s = v.split(":")
-        return float(m) + float(s) / 60
+        return float(m) + float(s)/60
     try:
         return float(v)
     except:
@@ -168,6 +166,7 @@ def stats_to_df(stats):
     for s in stats:
         g = s["game"]
         t = s["team"]
+
         rows.append({
             "date": pd.to_datetime(g["date"][:10]),
             "team_id": t["id"],
@@ -182,11 +181,11 @@ def stats_to_df(stats):
             "turnover": s.get("turnover"),
             "min": convert_minutes(s.get("min")),
         })
+
     return pd.DataFrame(rows)
 
-
 # ---------------------------------------------------------
-# METRICS
+# HIT RATE + STYLING
 # ---------------------------------------------------------
 
 def hit_rate(series, line):
@@ -194,7 +193,7 @@ def hit_rate(series, line):
     if len(s) == 0:
         return 0, 0, 0
     hits = (s >= line).sum()
-    return hits / len(s), hits, len(s)
+    return hits/len(s), hits, len(s)
 
 def glow_color(p):
     if p <= 0.50: return "#e74c3c"
@@ -204,9 +203,9 @@ def glow_color(p):
 
 def card(label, hits, total, avg):
     pct = hits / total if total > 0 else 0
-    pct_txt = f"{pct*100:.0f}%"
-    hit_txt = f"{hits}/{total}"
-    c = glow_color(pct)
+    pct_text = f"{pct*100:.0f}%"
+    hit_text = f"{hits}/{total}"
+    color = glow_color(pct)
 
     st.markdown(
         f"""
@@ -214,21 +213,19 @@ def card(label, hits, total, avg):
             background:#111;
             border-radius:10px;
             padding:14px;
-            border:2px solid {c};
-            box-shadow:0 0 12px {c};
-            color:white;
-        ">
+            border:2px solid {color};
+            box-shadow:0 0 12px {color};
+            color:white;">
             <div style="font-size:13px;color:#ccc;">{label}</div>
-            <div style="font-size:22px;font-weight:700;">{hit_txt} ({pct_txt})</div>
+            <div style="font-size:22px;font-weight:700;">{hit_text} ({pct_text})</div>
             <div style="font-size:14px;color:#bbb;">Avg: {avg:.1f}</div>
         </div>
         """,
         unsafe_allow_html=True
     )
 
-
 # ---------------------------------------------------------
-# PROJECTION MODEL
+# PROJECTION
 # ---------------------------------------------------------
 
 def projected_value(last10, season_avg, home_avg, def_rating):
@@ -237,24 +234,22 @@ def projected_value(last10, season_avg, home_avg, def_rating):
     adj = 1 + ((league_avg - def_rating) / league_avg) * 0.4 if def_rating else 1
     return base * adj
 
-
 # ---------------------------------------------------------
-# CSV SAVE & LOAD
+# CSV SAVE
 # ---------------------------------------------------------
 
 def load_saved():
-    if not SAVED_PROPS.exists():
-        return pd.DataFrame()
-    return pd.read_csv(SAVED_PROPS)
+    if SAVED_PROPS.exists():
+        return pd.read_csv(SAVED_PROPS)
+    return pd.DataFrame()
 
 def save_prop(row):
     df = load_saved()
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     df.to_csv(SAVED_PROPS, index=False)
 
-
 # ---------------------------------------------------------
-# ANALYSIS ENGINE
+# ANALYSIS
 # ---------------------------------------------------------
 
 def analyze(player, stat, line, odds, opp_abbr):
@@ -270,7 +265,7 @@ def analyze(player, stat, line, odds, opp_abbr):
     last10_avg = last10.mean()
     r10, h10, t10 = hit_rate(last10, line)
 
-    # Season
+    # Season Avg
     season_avg = df[field].mean()
     rs, hs, ts2 = hit_rate(df[field], line)
 
@@ -289,12 +284,11 @@ def analyze(player, stat, line, odds, opp_abbr):
     opp_id = next((t["id"] for t in teams if t["abbreviation"] == opp_abbr), None)
 
     if opp_id:
-        vs_df = df[(df["home_id"] == opp_id) | (df["away_id"] == opp_id)]
-        vs_avg = vs_df[field].mean() if not vs_df.empty else 0
-        rv, hv, tv = hit_rate(vs_df[field], line) if not vs_df.empty else (0,0,0)
+        vs = df[(df["home_id"] == opp_id) | (df["away_id"] == opp_id)][field]
+        vs_avg = vs.mean() if not vs.empty else 0
+        rv, hv, tv = hit_rate(vs, line) if not vs.empty else (0, 0, 0)
     else:
-        vs_avg = 0
-        rv, hv, tv = 0,0,0
+        vs_avg = rv = hv = tv = 0
 
     # Defensive Rating
     def_rating = get_def_rating(opp_abbr, season)
@@ -302,8 +296,7 @@ def analyze(player, stat, line, odds, opp_abbr):
     # Projection
     proj = projected_value(last10_avg, season_avg, home_avg, def_rating)
 
-    # ---- Display ----
-
+    # ----- UI -----
     st.markdown("### Performance Metrics")
 
     c1, c2, c3 = st.columns(3)
@@ -319,7 +312,6 @@ def analyze(player, stat, line, odds, opp_abbr):
     st.subheader("Projection")
     st.metric(f"Projected {stat}", f"{proj:.1f}")
 
-    # Save Prop
     if st.button("Save This Prop"):
         save_prop({
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -335,9 +327,8 @@ def analyze(player, stat, line, odds, opp_abbr):
         })
         st.success("Saved!")
 
-
 # ---------------------------------------------------------
-# UI LAYOUT
+# UI
 # ---------------------------------------------------------
 
 def main():
@@ -369,6 +360,7 @@ def main():
     st.markdown("---")
     st.subheader("Saved Props")
     df = load_saved()
+
     if df.empty:
         st.info("No saved props yet.")
     else:
