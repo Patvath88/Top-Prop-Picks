@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # ---------------------------------------------------------
@@ -17,17 +17,36 @@ SAVED_PROPS_CSV = DATA_DIR / "saved_props.csv"
 
 # Hardcoded NBA Teams (Full Name + Abbreviation)
 NBA_TEAMS = [
-    ("Atlanta Hawks", "ATL"), ("Boston Celtics", "BOS"), ("Brooklyn Nets", "BKN"),
-    ("Charlotte Hornets", "CHA"), ("Chicago Bulls", "CHI"), ("Cleveland Cavaliers", "CLE"),
-    ("Dallas Mavericks", "DAL"), ("Denver Nuggets", "DEN"), ("Detroit Pistons", "DET"),
-    ("Golden State Warriors", "GSW"), ("Houston Rockets", "HOU"), ("Indiana Pacers", "IND"),
-    ("Los Angeles Clippers", "LAC"), ("Los Angeles Lakers", "LAL"), ("Memphis Grizzlies", "MEM"),
-    ("Miami Heat", "MIA"), ("Milwaukee Bucks", "MIL"), ("Minnesota Timberwolves", "MIN"),
-    ("New Orleans Pelicans", "NOP"), ("New York Knicks", "NYK"), ("Oklahoma City Thunder", "OKC"),
-    ("Orlando Magic", "ORL"), ("Philadelphia 76ers", "PHI"), ("Phoenix Suns", "PHX"),
-    ("Portland Trail Blazers", "POR"), ("Sacramento Kings", "SAC"),
-    ("San Antonio Spurs", "SAS"), ("Toronto Raptors", "TOR"),
-    ("Utah Jazz", "UTA"), ("Washington Wizards", "WAS"),
+    ("Atlanta Hawks", "ATL"),
+    ("Boston Celtics", "BOS"),
+    ("Brooklyn Nets", "BKN"),
+    ("Charlotte Hornets", "CHA"),
+    ("Chicago Bulls", "CHI"),
+    ("Cleveland Cavaliers", "CLE"),
+    ("Dallas Mavericks", "DAL"),
+    ("Denver Nuggets", "DEN"),
+    ("Detroit Pistons", "DET"),
+    ("Golden State Warriors", "GSW"),
+    ("Houston Rockets", "HOU"),
+    ("Indiana Pacers", "IND"),
+    ("Los Angeles Clippers", "LAC"),
+    ("Los Angeles Lakers", "LAL"),
+    ("Memphis Grizzlies", "MEM"),
+    ("Miami Heat", "MIA"),
+    ("Milwaukee Bucks", "MIL"),
+    ("Minnesota Timberwolves", "MIN"),
+    ("New Orleans Pelicans", "NOP"),
+    ("New York Knicks", "NYK"),
+    ("Oklahoma City Thunder", "OKC"),
+    ("Orlando Magic", "ORL"),
+    ("Philadelphia 76ers", "PHI"),
+    ("Phoenix Suns", "PHX"),
+    ("Portland Trail Blazers", "POR"),
+    ("Sacramento Kings", "SAC"),
+    ("San Antonio Spurs", "SAS"),
+    ("Toronto Raptors", "TOR"),
+    ("Utah Jazz", "UTA"),
+    ("Washington Wizards", "WAS"),
 ]
 
 # ---------------------------------------------------------
@@ -35,8 +54,14 @@ NBA_TEAMS = [
 # ---------------------------------------------------------
 
 STAT_FIELD_MAP = {
-    "Points": "pts", "Rebounds": "reb", "Assists": "ast", "Threes Made": "fg3m",
-    "Steals": "stl", "Blocks": "blk", "Turnovers": "turnover", "Minutes": "min",
+    "Points": "pts",
+    "Rebounds": "reb",
+    "Assists": "ast",
+    "Threes Made": "fg3m",
+    "Steals": "stl",
+    "Blocks": "blk",
+    "Turnovers": "turnover",
+    "Minutes": "min",
 }
 
 # ---------------------------------------------------------
@@ -55,18 +80,17 @@ def api_get(endpoint, params=None):
 
 
 def get_active_players(search_term):
-    """Search any player from BDL."""
     data = api_get("players", {"search": search_term, "per_page": 50})
     unique = {}
     for p in data.get("data", []):
-        key = (p["first_name"], p["last_name"])
-        unique.setdefault(key, p)
+        unique.setdefault((p["first_name"], p["last_name"]), p)
     return list(unique.values())
 
 
 def get_player_stats(player_id, seasons=None):
-    """Pull all games for this player this season."""
-    all_stats, cursor = [], None
+    all_stats = []
+    cursor = None
+
     while True:
         params = {"player_ids[]": player_id, "per_page": 100}
         if cursor:
@@ -75,46 +99,56 @@ def get_player_stats(player_id, seasons=None):
             for s in seasons:
                 params.setdefault("seasons[]", []).append(s)
 
-        r = api_get("stats", params)
-        rows = r.get("data", [])
-        if not rows:
+        res = api_get("stats", params)
+        stats = res.get("data", [])
+        if not stats:
             break
 
-        all_stats.extend(rows)
-        cursor = r.get("meta", {}).get("next_cursor")
+        all_stats.extend(stats)
+        cursor = res.get("meta", {}).get("next_cursor")
         if not cursor:
             break
 
     return all_stats
 
 # ---------------------------------------------------------
-# DEFENSIVE RATING (ALWAYS APPLIED)
+# DEFENSIVE RATING (patched)
 # ---------------------------------------------------------
 
 def get_team_def_rating(team_abbr, season_year):
-    """Computes average points allowed per game for a team."""
+    """Computes average points allowed per game for a team (safe version)."""
+
     teams = api_get("teams").get("data", [])
-    team_id = next((t["id"] for t in teams if t["abbreviation"] == team_abbr), None)
+    team_id = next((t["id"] for t in teams if t["abbreviation"].upper() == team_abbr.upper()), None)
+
     if not team_id:
         return 0.0
 
-    all_games, cursor = [], None
+    all_games = []
+    cursor = None
+
     while True:
         params = {"seasons[]": season_year, "per_page": 100}
         if cursor:
             params["cursor"] = cursor
 
-        r = api_get("games", params)
-        g = r.get("data", [])
-        if not g:
+        res = api_get("games", params)
+        games = res.get("data", [])
+        if not games:
             break
 
-        # collect all games involving this team
-        for gm in g:
-            if gm["home_team_id"] == team_id or gm["visitor_team_id"] == team_id:
+        for gm in games:
+            home_id = gm.get("home_team_id")
+            away_id = gm.get("visitor_team_id")
+
+            # skip malformed objects
+            if home_id is None or away_id is None:
+                continue
+
+            if home_id == team_id or away_id == team_id:
                 all_games.append(gm)
 
-        cursor = r.get("meta", {}).get("next_cursor")
+        cursor = res.get("meta", {}).get("next_cursor")
         if not cursor:
             break
 
@@ -122,31 +156,36 @@ def get_team_def_rating(team_abbr, season_year):
     if not finals:
         return 0.0
 
-    total = 0
+    allowed = []
     for gm in finals:
-        if gm["home_team_id"] == team_id:
-            total += gm["visitor_team_score"]
-        else:
-            total += gm["home_team_score"]
+        home_id = gm.get("home_team_id")
+        home_score = gm.get("home_team_score", 0)
+        away_score = gm.get("visitor_team_score", 0)
 
-    return total / len(finals)
+        if home_id == team_id:
+            allowed.append(away_score)
+        else:
+            allowed.append(home_score)
+
+    return sum(allowed) / len(allowed) if allowed else 0.0
 
 # ---------------------------------------------------------
 # DATA PROCESSING
 # ---------------------------------------------------------
 
-def _to_minutes(v):
+def _convert_minutes(v):
     if not v:
         return 0
     if isinstance(v, (float, int)):
         return float(v)
     if ":" in v:
         m, s = v.split(":")
-        return float(m) + float(s) / 60
+        return float(m) + float(s)/60
     try:
         return float(v)
     except:
         return 0
+
 
 def stats_df(stats):
     rows = []
@@ -165,46 +204,47 @@ def stats_df(stats):
             "stl": s.get("stl"),
             "blk": s.get("blk"),
             "turnover": s.get("turnover"),
-            "min": _to_minutes(s.get("min")),
+            "min": _convert_minutes(s.get("min")),
         })
     return pd.DataFrame(rows)
 
 # ---------------------------------------------------------
-# HIT RATE + METRIC CARDS
+# HIT RATES + CARDS
 # ---------------------------------------------------------
 
 def hit_rate(series, line):
     s = series.dropna()
-    if len(s) == 0:
+    if s.empty:
         return 0, 0, 0
     hits = (s >= line).sum()
     total = len(s)
-    return hits / total, hits, total
+    return hits/total, hits, total
 
-def color_for(p):
+
+def glow_color(p):
     if p <= 0.50: return "#e74c3c"
     if p <= 0.60: return "#e67e22"
     if p <= 0.70: return "#f1c40f"
     return "#2ecc71"
 
+
 def metric_card(label, hits, total, avg):
-    pct = hits / total if total > 0 else 0
-    c = color_for(pct)
-    pct_text = f"{pct*100:.0f}%"
-    hits_text = f"{hits}/{total}"
+    pct = hits/total if total > 0 else 0
+    c = glow_color(pct)
+    pct_txt = f"{pct*100:.0f}%"
+    hit_txt = f"{hits}/{total}"
 
     st.markdown(
         f"""
         <div style="
-            border: 3px solid {c};
-            box-shadow: 0 0 10px {c};
-            border-radius: 12px;
-            padding: 14px;
-            margin: 6px;
-            background:white;
-        ">
-            <div style="font-size:13px; color:#555;">{label}</div>
-            <div style="font-size:20px; font-weight:700;">{hits_text} ({pct_text})</div>
+            border:3px solid {c};
+            box-shadow:0 0 12px {c};
+            border-radius:12px;
+            padding:12px;
+            margin:6px;
+            background:white;">
+            <div style="font-size:13px;color:#555;">{label}</div>
+            <div style="font-size:20px;font-weight:700;">{hit_txt} ({pct_txt})</div>
             <div style="font-size:14px;">Avg: {avg:.1f}</div>
         </div>
         """,
@@ -212,23 +252,24 @@ def metric_card(label, hits, total, avg):
     )
 
 # ---------------------------------------------------------
-# PROJECTION MODEL
+# PROJECTION
 # ---------------------------------------------------------
 
-def projection(l10, season, homeaway, def_rating):
-    base = 0.5*l10 + 0.3*season + 0.2*homeaway
+def projection(l10, season, home, def_rating):
+    base = (0.5*l10 + 0.3*season + 0.2*home)
     league_avg = 114
     adj = 1 + ((league_avg - def_rating) / league_avg) * 0.5 if def_rating else 1
     return base * adj
 
 # ---------------------------------------------------------
-# SAVE + LOAD
+# SAVING
 # ---------------------------------------------------------
 
 def load_props():
     if not SAVED_PROPS_CSV.exists():
         return pd.DataFrame()
     return pd.read_csv(SAVED_PROPS_CSV)
+
 
 def save_props(df):
     df.to_csv(SAVED_PROPS_CSV, index=False)
@@ -240,7 +281,7 @@ def save_props(df):
 def run_analysis(player, stat, line_val, odds_val, opponent_abbr):
     st.subheader(f"{player['first_name']} {player['last_name']} – {stat}")
 
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     season = today.year
 
     stats = get_player_stats(player["id"], seasons=[season])
@@ -260,31 +301,37 @@ def run_analysis(player, stat, line_val, odds_val, opponent_abbr):
     season_avg = df[field].mean()
     rs, hs, ts = hit_rate(df[field], line_val)
 
-    # Home / Away
-    home = df[df["team_id"] == df["home_team_id"]][field]
-    away = df[df["team_id"] != df["home_team_id"]][field]
+    # Home/Away
+    home_series = df[df["team_id"] == df["home_team_id"]][field]
+    away_series = df[df["team_id"] != df["home_team_id"]][field]
 
-    home_avg = home.mean()
-    rh, hh, th = hit_rate(home, line_val)
+    home_avg = home_series.mean()
+    rh, hh, th = hit_rate(home_series, line_val)
 
-    away_avg = away.mean()
-    ra, ha, ta = hit_rate(away, line_val)
+    away_avg = away_series.mean()
+    ra, ha, ta = hit_rate(away_series, line_val)
 
-    # Vs opponent (always shown)
-    vs = df[(df["home_team_id"] == opponent_abbr) | (df["visitor_team_id"] == opponent_abbr)]
-    vs_avg = vs[field].mean() if not vs.empty else 0
-    rv, hv, tv = hit_rate(vs[field], line_val) if not vs.empty else (0, 0, 0)
+    # Vs upcoming opponent (always shown)
+    opp_teams = api_get("teams").get("data", [])
+    opp_id = next((t["id"] for t in opp_teams if t["abbreviation"] == opponent_abbr), None)
 
-    # Defensive rating ALWAYS applies
+    if opp_id:
+        vs_df = df[(df["home_team_id"] == opp_id) | (df["visitor_team_id"] == opp_id)]
+        vs_avg = vs_df[field].mean() if not vs_df.empty else 0
+        rv, hv, tv = hit_rate(vs_df[field], line_val) if not vs_df.empty else (0, 0, 0)
+    else:
+        vs_avg = 0
+        rv, hv, tv = 0, 0, 0
+
+    # Defensive rating
     def_rating = get_team_def_rating(opponent_abbr, season)
 
     # Projection
     proj = projection(l10_avg, season_avg, home_avg, def_rating)
 
-    # -------------------------------------------------
-    # METRIC CARD GRID
-    # -------------------------------------------------
-
+    # -----------------------------------------------------
+    # Metric card grid
+    # -----------------------------------------------------
     st.markdown("### Hit Rates & Context")
 
     c1, c2, c3 = st.columns(3)
@@ -297,15 +344,14 @@ def run_analysis(player, stat, line_val, odds_val, opponent_abbr):
     with c5: metric_card("Vs Opponent ≥ Line", hv, tv, vs_avg)
     with c6: metric_card("Opponent Def Rating", 0, 0, def_rating)
 
-    st.subheader("Projection")
+    st.subheader("Projected Outcome")
     st.metric(f"Projected {stat}", f"{proj:.1f}")
 
-    # SAVE PROP
+    # Save Prop
     if st.button("Save This Prop"):
         dfp = load_props()
-
         new = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "player": f"{player['first_name']} {player['last_name']}",
             "player_id": player["id"],
             "team": player["team"]["abbreviation"],
@@ -316,11 +362,9 @@ def run_analysis(player, stat, line_val, odds_val, opponent_abbr):
             "opponent": opponent_abbr,
             "outcome": "Pending",
         }
-
         dfp = pd.concat([dfp, pd.DataFrame([new])], ignore_index=True)
         save_props(dfp)
         st.success("Prop Saved!")
-
 
 # ---------------------------------------------------------
 # STREAMLIT UI
@@ -328,6 +372,7 @@ def run_analysis(player, stat, line_val, odds_val, opponent_abbr):
 
 def main():
     st.set_page_config(page_title="Top Prop Picks", layout="wide")
+
     st.title("Top Prop Picks – NBA Prop Evaluator")
 
     search = st.text_input("Search Player:")
@@ -358,8 +403,7 @@ def main():
     if dfp.empty:
         st.info("No saved props yet.")
     else:
-        dfp = dfp.sort_values("timestamp", ascending=False)
-        st.dataframe(dfp, use_container_width=True, hide_index=True)
+        st.dataframe(dfp.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
